@@ -1493,7 +1493,17 @@ function RngTracker({ weights, velocities, onChange, savedData, readOnly }) {
 
 
 function ProgramDisplay({ program }) {
-  const lines = program.split('\n');
+  // Strip markdown syntax so headers/bold/bullets render as clean text,
+  // then let the existing line-by-line parser below apply its own styling.
+  const stripMarkdown = (line) => {
+    return line
+      .replace(/^#{1,6}\s*/, '')           // # ## ### headers
+      .replace(/\*\*(.+?)\*\*/g, '$1')      // **bold**
+      .replace(/\*(.+?)\*/g, '$1')          // *italic*
+      .replace(/^[*-]\s+/, '- ')             // normalize * bullets to -
+      .replace(/^---+$/, '');                // horizontal rule lines
+  };
+  const lines = program.split('\n').map(stripMarkdown);
 
   const DAY_HEADERS = ['HIGH INTENT DAY','MID INTENT DAY','LOW INTENT DAY'];
   const SECTION_HEADERS = ['COACHING DIAGNOSIS','DAILY STRUCTURE','ATHLETE DATA'];
