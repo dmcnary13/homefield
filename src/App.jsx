@@ -1779,9 +1779,13 @@ export default function App() {
       { pct: 58, label: 'Designing catch play arc' },
       { pct: 70, label: 'Programming main events' },
       { pct: 82, label: 'Prescribing arm care' },
-      { pct: 92, label: 'Finalizing program' },
+      { pct: 90, label: 'Writing full program' },
+      { pct: 95, label: 'Finalizing program' },
     ];
 
+    // Generation genuinely takes ~2 minutes given the depth of this prompt —
+    // stretch the stage ticks to roughly match real elapsed time instead of
+    // racing through all stages in 15 seconds and stalling on the last one.
     let stageIdx = 0;
     const stageInterval = setInterval(() => {
       if(stageIdx < stages.length) {
@@ -1789,7 +1793,7 @@ export default function App() {
         setGenerateStage(stages[stageIdx].label);
         stageIdx++;
       }
-    }, 1800);
+    }, 13000);
 
     try {
       const athleteRecord = accountAthletes.find(a=>a.name===info.name&&a.hand===info.hand);
