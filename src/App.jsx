@@ -1787,7 +1787,7 @@ export default function App() {
       const prompt = buildPrompt(result, info, priorSessions);
       const resp = await fetch('/api/generate',{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:50000,messages:[{role:'user',content:prompt}]})
+        body:JSON.stringify({model:'claude-sonnet-4-5-20250929',max_tokens:50000,messages:[{role:'user',content:prompt}]})
       });
       clearInterval(stageInterval);
       setGenerateProgress(98);
