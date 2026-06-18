@@ -49,6 +49,39 @@ const sb = {
   },
 };
 
+// ─── SUPABASE AUTH HELPERS ──────────────────────────────────────────────────
+// Real authentication via Supabase Auth's REST endpoints — handles password
+// hashing, secure tokens, and sessions server-side. We never see or store
+// raw passwords ourselves.
+const sbAuth = {
+  async signUp(email, password) {
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/signup`, {
+      method: "POST",
+      headers: { "apikey": SUPABASE_KEY, "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
+    });
+    const data = await res.json();
+    if (!res.ok) return { error: data.msg || data.error_description || "Sign up failed" };
+    return { user: data.user, session: data };
+  },
+  async signIn(email, password) {
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+      method: "POST",
+      headers: { "apikey": SUPABASE_KEY, "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
+    });
+    const data = await res.json();
+    if (!res.ok) return { error: data.msg || data.error_description || "Invalid email or password" };
+    return { user: data.user, session: data };
+  },
+  async signOut(accessToken) {
+    await fetch(`${SUPABASE_URL}/auth/v1/logout`, {
+      method: "POST",
+      headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${accessToken}` },
+    });
+  },
+};
+
 // ─── LEGACY LOCALSTORAGE HELPER ─────────────────────────────────────────────
 // Kept only as a local cache/fallback while the Supabase migration settles.
 const store = {
@@ -1664,7 +1697,7 @@ export default function App() {
       const sessionRows = await sb.select('sessions', 'select=*&order=created_at.asc');
 
       const mappedAccounts = accountRows.map(a => ({
-        email: a.email, password: a.password_hash, name: a.name, mode: a.mode,
+        email: a.email, authUserId: a.auth_user_id, name: a.name, mode: a.mode,
         plan: { tier: a.plan_tier, billing: a.plan_billing }, id: a.id,
       }));
 
@@ -1705,30 +1738,44 @@ export default function App() {
   const createAccount = async (mode, planTier, billing) => {
     if(accounts.find(a=>a.email===authForm.email)) { setAuthError('An account with this email already exists.'); return; }
     if(!authForm.email || !authForm.password || !authForm.name) { setAuthError('Fill in all fields.'); return; }
-    // NOTE: storing the raw password in plaintext for now — this is a placeholder
-    // until real auth (password hashing, Supabase Auth, etc.) replaces this layer.
+    if(authForm.password.length < 6) { setAuthError('Password must be at least 6 characters.'); return; }
+
+    const authResult = await sbAuth.signUp(authForm.email, authForm.password);
+    if(authResult.error) { setAuthError(authResult.error); return; }
+
     const inserted = await sb.insert('accounts', {
-      email: authForm.email, password_hash: authForm.password, name: authForm.name,
+      email: authForm.email, auth_user_id: authResult.user?.id, name: authForm.name,
       mode, plan_tier: planTier, plan_billing: billing,
     });
-    if(!inserted) { setAuthError('Something went wrong creating your account. Try again.'); return; }
-    const newAccount = { email: inserted.email, password: inserted.password_hash, name: inserted.name, mode: inserted.mode, plan: { tier: inserted.plan_tier, billing: inserted.plan_billing }, id: inserted.id };
+    if(!inserted) { setAuthError('Account created but profile setup failed. Try logging in.'); return; }
+
+    const newAccount = { email: inserted.email, name: inserted.name, mode: inserted.mode, plan: { tier: inserted.plan_tier, billing: inserted.plan_billing }, id: inserted.id, authUserId: inserted.auth_user_id };
     setAccounts(prev => [...prev, newAccount]);
     setCurrentAccount(newAccount.email);
+    if(authResult.session?.access_token) store.set('sbAccessToken', authResult.session.access_token);
     setAuthError('');
     setScreen(mode==='coach' ? 'coachDash' : 'athleteHome');
   };
 
-  const loginAccount = () => {
-    const found = accounts.find(a=>a.email===authForm.email && a.password===authForm.password);
-    if(!found) { setAuthError('No account found with that email and password.'); return; }
+  const loginAccount = async () => {
+    if(!authForm.email || !authForm.password) { setAuthError('Enter your email and password.'); return; }
+    const authResult = await sbAuth.signIn(authForm.email, authForm.password);
+    if(authResult.error) { setAuthError(authResult.error); return; }
+
+    const found = accounts.find(a=>a.email===authForm.email);
+    if(!found) { setAuthError('Account profile not found. Contact support.'); return; }
+
     setCurrentAccount(found.email);
     setMode(found.mode);
+    if(authResult.session?.access_token) store.set('sbAccessToken', authResult.session.access_token);
     setAuthError('');
     setScreen(found.mode==='coach' ? 'coachDash' : 'athleteHome');
   };
 
-  const logout = () => {
+  const logout = async () => {
+    const token = store.get('sbAccessToken');
+    if(token) await sbAuth.signOut(token);
+    store.set('sbAccessToken', null);
     setCurrentAccount(null);
     setMode(null);
     setScreen('landing');
@@ -1925,11 +1972,7 @@ export default function App() {
           </div>
         </div>
         {authError && <div style={{fontSize:12,color:'#E84855',marginTop:8,marginBottom:8}}>{authError}</div>}
-        <button onClick={()=>{
-          const found = accounts.find(a=>a.email===authForm.email && a.password===authForm.password);
-          if(!found){ setAuthError("No account found, or your password doesn't match. Try Create Account if you're new."); return; }
-          loginAccount();
-        }} style={{...btnPrimary,marginTop:16}}>
+        <button onClick={loginAccount} style={{...btnPrimary,marginTop:16}}>
           <span>Log In</span>
         </button>
         <button onClick={()=>setScreen('createAccount')} style={{background:'none',border:'none',color:'rgba(255,255,255,0.3)',fontSize:12,cursor:'pointer',fontFamily:"'DM Sans',sans-serif",marginTop:16,textAlign:'center'}}>Don't have an account? Create one →</button>
