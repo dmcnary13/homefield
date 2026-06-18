@@ -1785,7 +1785,7 @@ export default function App() {
       const athleteRecord = accountAthletes.find(a=>a.name===info.name&&a.hand===info.hand);
       const priorSessions = athleteRecord?.sessions || [];
       const prompt = buildPrompt(result, info, priorSessions);
-      const resp = await fetch('https://api.anthropic.com/v1/messages',{
+      const resp = await fetch('/api/generate',{
         method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:50000,messages:[{role:'user',content:prompt}]})
       });
