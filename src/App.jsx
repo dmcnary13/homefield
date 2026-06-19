@@ -255,48 +255,124 @@ function buildPrompt(result, info, priorSessions=[]) {
   let longitudinalBlock = '';
   if(priorSessions && priorSessions.length > 0) {
     const recent = [...priorSessions].slice(-3).reverse();
+    const bNames5 = ['Direction','Velocity','Shape','Arm Action','Command'];
+
+    // Build prior history rows — match Preprocessor format exactly
     const rows = recent.map((s,i) => {
       const b = s.result?.bArr || [];
-      const bStr = bNames.map((n,bi) => `${n} ${b[bi]!==null&&b[bi]!==undefined?(b[bi]*100).toFixed(0):'N/A'}`).join(' | ');
+      const bStr = bNames5.map((n,bi) => `${n} ${b[bi]!==null&&b[bi]!==undefined?(b[bi]).toFixed(2):'N/A'}`).join(' | ');
       const velo = s.result?.avgs?.[2]?.toFixed(1) || 'N/A';
-      const overall = s.overall!==null?Math.round(s.overall*100):'N/A';
       const sfocus = s.result?.focus || 'N/A';
+      const sVeloMaker = s.result?.bestMetric || 'N/A';
+      const sPSM = s.result?.n14?.toFixed(2) ?? 'N/A';
+      const sRHM = s.result?.o14?.toFixed(2) ?? 'N/A';
       const date = new Date(s.date).toLocaleDateString();
-      return `Session ${recent.length-i} (${date}): Overall ${overall} | Velo ${velo} | ${bStr} | Focus: ${sfocus}`;
+      const lowestIdx = b.reduce((mi,v,i)=>(v!==null&&v!==undefined&&(mi===-1||v<b[mi]))?i:mi,-1);
+      const lowestName = lowestIdx>=0 ? bNames5[lowestIdx] : 'N/A';
+      return `Session ${recent.length-i} (${date}): Velo ${velo} | ${bStr} | Lowest: ${lowestName} | Focus: ${sfocus} | Velo Maker: ${sVeloMaker} | PSM: ${sPSM} | RHM: ${sRHM}`;
     });
-    const trends = [];
-    if(recent.length >= 2) {
-      bNames.forEach((n,bi) => {
-        const vals = recent.map(s => s.result?.bArr?.[bi]).filter(v => v !== null && v !== undefined);
-        if(vals.length >= 2) {
-          const delta = vals[0] - vals[vals.length-1];
-          if(Math.abs(delta) >= 0.05) trends.push(`${n} ${delta > 0 ? 'improved' : 'declined'} ${Math.abs(delta*100).toFixed(0)} points`);
-        }
-      });
-      const veloVals = recent.map(s => s.result?.avgs?.[2]).filter(v => v !== null && v !== undefined);
-      if(veloVals.length >= 2) {
-        const vDelta = veloVals[0] - veloVals[veloVals.length-1];
-        if(Math.abs(vDelta) >= 0.3) trends.push(`Velocity ${vDelta > 0 ? 'up' : 'down'} ${Math.abs(vDelta).toFixed(1)} mph`);
+
+    // Build trend analysis — match Preprocessor depth
+    const trendLines = [];
+    const allSessions = [...recent].reverse(); // oldest to newest for delta calc
+
+    // Velocity trend
+    const veloVals = allSessions.map(s => s.result?.avgs?.[2]).filter(v => v !== null && v !== undefined);
+    if(veloVals.length >= 2) {
+      const vDelta = veloVals[veloVals.length-1] - veloVals[0];
+      const vDir = Math.abs(vDelta) < 0.3 ? 'Flat' : vDelta > 0 ? 'Up' : 'Down';
+      let veloNote = `Velocity: ${vDir} — ${vDelta >= 0 ? '+' : ''}${vDelta.toFixed(1)} mph from first to most recent session.`;
+      // Flag drop between consecutive sessions
+      for(let i=1; i<veloVals.length; i++) {
+        if(veloVals[i] < veloVals[i-1] - 0.3) veloNote += ` DROP between sessions ${i} and ${i+1} — flag this.`;
+      }
+      trendLines.push(veloNote);
+    }
+
+    // Bucket trends
+    bNames5.forEach((n,bi) => {
+      const vals = allSessions.map(s => s.result?.bArr?.[bi]).filter(v => v !== null && v !== undefined);
+      if(vals.length >= 2) {
+        const delta = vals[vals.length-1] - vals[0];
+        const dir = Math.abs(delta) < 0.05 ? 'Flat' : delta > 0 ? 'Improved' : 'Declined';
+        let bucketNote = `${n}: ${dir} — ${delta >= 0 ? '+' : ''}${(delta*100).toFixed(0)} points.`;
+        // Persistent low flag
+        if(vals.every(v => v < 0.33)) bucketNote += ` PERSISTENT LOW across all ${vals.length} sessions — escalate emphasis. Prior approaches have not moved this needle.`;
+        trendLines.push(bucketNote);
+      }
+    });
+
+    // PSM trend
+    const psmVals = allSessions.map(s => s.result?.n14).filter(v => v !== null && v !== undefined);
+    if(psmVals.length >= 2) {
+      const allZero = psmVals.every(v => v < 0.05);
+      if(allZero) trendLines.push(`Plate Side Match: Persistent 0.00 across all ${psmVals.length} sessions — persistent timing issue, arm is late, not structural.`);
+      else {
+        const pDelta = psmVals[psmVals.length-1] - psmVals[0];
+        trendLines.push(`Plate Side Match: ${pDelta >= 0 ? 'Improved' : 'Declined'} — ${pDelta >= 0 ? '+' : ''}${pDelta.toFixed(2)}.`);
       }
     }
+
+    // RHM trend
+    const rhmVals = allSessions.map(s => s.result?.o14).filter(v => v !== null && v !== undefined);
+    if(rhmVals.length >= 2) {
+      const allZero = rhmVals.every(v => v < 0.05);
+      if(allZero) trendLines.push(`Release Height Match: Persistent 0.00 across all ${rhmVals.length} sessions — persistent release height inconsistency likely tied to sequencing.`);
+      else {
+        const rDelta = rhmVals[rhmVals.length-1] - rhmVals[0];
+        trendLines.push(`Release Height Match: ${rDelta >= 0 ? 'Improved' : 'Declined'} — ${rDelta >= 0 ? '+' : ''}${rDelta.toFixed(2)}.`);
+      }
+    }
+
+    // Velo Maker consistency
+    const veloMakers = allSessions.map(s => s.result?.bestMetric).filter(Boolean);
+    if(veloMakers.length >= 2) {
+      const consistent = veloMakers.every(v => v === veloMakers[0]);
+      if(consistent) trendLines.push(`Velo Maker: Consistent as ${veloMakers[0]} across all sessions — preserve this mechanical driver.`);
+      else trendLines.push(`Velo Maker: Changed — ${veloMakers.join(' → ')}. Note the shift and assess whether the underlying driver genuinely changed.`);
+    }
+
+    // Lowest bucket persistence
+    const lowestBuckets = allSessions.map(s => {
+      const b = s.result?.bArr || [];
+      const idx = b.reduce((mi,v,i)=>(v!==null&&v!==undefined&&(mi===-1||v<b[mi]))?i:mi,-1);
+      return idx >= 0 ? bNames5[idx] : null;
+    }).filter(Boolean);
+    if(lowestBuckets.length >= 2) {
+      const allSame = lowestBuckets.every(v => v === lowestBuckets[0]);
+      if(allSame) trendLines.push(`Lowest bucket: ${lowestBuckets[0]} has been the lowest bucket across all ${lowestBuckets.length} sessions — prior programs have not resolved this. Escalate.`);
+      else trendLines.push(`Lowest bucket: Changed from ${lowestBuckets[0]} to ${lowestBuckets[lowestBuckets.length-1]} this session.`);
+    }
+
+    // Build longitudinal instructions
+    const instructions = [];
+    bNames5.forEach((n,bi) => {
+      const vals = allSessions.map(s => s.result?.bArr?.[bi]).filter(v => v !== null && v !== undefined);
+      if(vals.length >= 2 && vals.every(v => v < 0.33)) {
+        instructions.push(`${n} bucket has been persistently low across all sessions — escalate emphasis beyond what prior programs prescribed. Do not repeat the same approach.`);
+      }
+    });
+    const highBuckets = bNames5.filter((n,bi) => allSessions.every(s => (s.result?.bArr?.[bi] ?? 0) > 0.85));
+    if(highBuckets.length > 0) instructions.push(`${highBuckets.join(' and ')} ${highBuckets.length > 1 ? 'have' : 'has'} been high across all sessions — do not make ${highBuckets.length > 1 ? 'these' : 'this'} a correction target. Build around ${highBuckets.length > 1 ? 'them' : 'it'}.`);
+    if(psmVals.length >= 2 && psmVals.every(v => v < 0.05)) instructions.push(`Plate Side Match has been 0.00 across all sessions — treat late arm timing as a persistent longitudinal constraint, not a new finding.`);
+    if(veloMakers.length >= 2 && veloMakers.every(v => v === veloMakers[0])) instructions.push(`Velo Maker has been ${veloMakers[0]} across all sessions — preserve this driver, do not prescribe drills that alter the mechanical qualities supporting it.`);
+
     longitudinalBlock = `
 PRIOR SESSION HISTORY (most recent first):
 ${rows.join('\n')}
 
 TREND ANALYSIS:
-${trends.length > 0 ? trends.join(', ') : 'First or second session — no trend data yet.'}
+${trendLines.length > 0 ? trendLines.join('\n') : 'First or second session — insufficient data for trend analysis.'}
 
-LONGITUDINAL AND PROGRESSION RULES:
-- If a bucket has been low across multiple sessions, escalate the emphasis — do not repeat the same approach.
-- If a bucket improved, acknowledge it and build on what drove that improvement.
-- If velocity increased, identify what drove it and reinforce it.
-- If velocity stalled or declined, identify what changed and adjust accordingly.
-- Do not prescribe the same plyo drills as the most recent session unless producing clear measurable improvement.
-- The program must reflect this athlete's history and trajectory — not just today's snapshot.
-- If prior session history shows a flaw category was addressed and metric or image evidence improved, ADVANCE that drill concept to the next progression stage (see Drill Progression Model below) rather than repeating the same stage.
-- If prior session history shows a flaw category was addressed but did NOT improve, stay at the same stage or regress one stage rather than advancing.
-- Never skip a progression stage. An athlete cannot go from Stage 1 directly to Stage 4.
-- If the monthly mechanical priority (see Sequential Mechanical Chain below) has shown clear progress across sessions, shift the primary focus to the next link in the chain rather than continuing to over-index on a position that is already fixed.`;
+LONGITUDINAL INSTRUCTIONS:
+${instructions.length > 0 ? instructions.map(i => `- ${i}`).join('\n') : '- Use prior session as baseline context. No persistent patterns identified yet.'}
+
+PROGRESSION RULES:
+- If prior session history shows a flaw category was addressed and metric evidence improved, ADVANCE that drill concept to the next progression stage — do not repeat the same stage.
+- If prior session history shows a flaw category was addressed but did NOT improve, stay at the same stage or regress one stage.
+- Never skip a progression stage.
+- If the monthly mechanical priority has shown clear progress across sessions, shift primary focus to the next link in the chain.
+- The program must reflect this athlete's history and trajectory — not just today's snapshot.`;
   }
 
   const lowestBucketName = bNames[bArr.reduce((mi,v,i)=>(v!==null&&(mi===-1||v<bArr[mi]))?i:mi,-1)];
@@ -729,9 +805,9 @@ PRIORITY ORDER (highest to lowest):
 WHEN MULTIPLE FLAWS ARE TRIGGERED:
 - Identify the highest priority flaw using the order above.
 - The plyo routine's primary emphasis (Position 1 and Position 2 drills, and the most prominent placement) goes to the highest priority flaw.
-- If a lower priority flaw is also triggered, you may include ONE drill from that category later in the sequence (Position 3 or 4) as secondary work, but do not give it equal weighting in the routine.
-- In the Limiter Identified line, name both the primary and secondary flaw, and explain in one sentence why the primary flaw is being prioritized: "Limiter identified: Bad Backside Load (primary) with Late Arm pattern present as a likely downstream symptom — prioritizing backside load correction before addressing arm timing directly."
-- Do not treat all triggered flaws as equally important. A program addressing four flaws at once is unfocused and will not produce results. Pick the root, fix the root.
+- If a lower priority flaw is also triggered and is confirmed downstream of the root cause, you may include ONE drill from that category. It must occupy Position 5 — the absolute final drill in the routine, never Position 4 or earlier. It never gets equal billing, equal weight, or equal cueing emphasis as the root cause drills. The weight should be lighter than Position 4 since this drill's purpose is awareness, not loading. The athlete should be able to read the program and immediately understand which drill is the primary focus and which one is a light downstream touch — that difference must be visible in the placement, the weight, and the framing.
+- The "Why this drill" field for the Position 5 downstream drill must explicitly state it is a downstream consequence of the primary flaw, not an independent problem being addressed. Example: "Included last as a light touch on arm timing — this is a downstream consequence of the backside load leaking early, and may resolve on its own as the primary goal improves. Do not treat this as a co-equal focus.""
+- Do not treat all triggered flaws as equally important. A program addressing four flaws at once is unfocused and will not produce results. Pick the root, fix the root, and touch the downstream lightly at the end.
 
 ================================================================================
 IMAGES AND DATA AS EQUAL PARTNERS FOR STAGE PLACEMENT AND FLAW CONFIRMATION
@@ -789,7 +865,7 @@ CHAIN STEP 2: If Peak Leg Lift looks correct, check Bottom of the Drop for wheth
 
 CHAIN STEP 3: If chain steps 1 and 2 are clean, check Foot Strike for whether the held rotation is being released correctly into a firm front leg with the proper hip-shoulder separation (hips opening, shoulders staying closed). If this breaks down despite clean upstream positions, the issue is isolated to the release/timing of the rotation itself, not the loading of it.
 
-CHAIN STEP 4 and 5: Only evaluate Max Layback and Release Point as independent problems if everything upstream (chain steps 1-3) is clean. If upstream positions are broken, Max Layback and Release Point issues are almost always downstream symptoms — note this in the diagnosis, but do not build the program around fixing them directly. Fixing the upstream cause will very likely resolve them as a byproduct.
+CHAIN STEP 4 and 5: Only evaluate Max Layback and Release Point as independent problems if everything upstream (chain steps 1-3) is clean. If upstream positions are broken, Max Layback and Release Point issues are almost always downstream symptoms — note this in the diagnosis, and do not give them primary billing in the program. Fixing the upstream cause will very likely resolve them as a byproduct. You may include one light downstream drill placed last in the plyo routine as a touch point, but it must be framed explicitly as secondary and downstream — not as a co-equal problem being addressed simultaneously.
 
 ================================================================================
 MONTHLY PROGRAM PRIORITY RULE
@@ -873,6 +949,131 @@ If a flaw-specific drill is prescribed from the flaw bank, insert it at the posi
 ================================================================================
 
 When building the plyo routine, always check the flaw categories above before selecting drills from the general bank. If a flaw is active — either from data triggers or from a red flag — the routine must include at least one drill from that flaw category. The routine should tell the story of the kinetic chain from ground up. Every drill must connect to one piece of the sequence. The athlete should be able to feel what they are working on and why.
+
+
+================================================================================
+MOVEMENT PHILOSOPHY — SILENT PRINCIPLES FOR DRILL SELECTION AND CUEING
+================================================================================
+
+The following principles inform how drills are selected, ordered, and cued. They do not appear explicitly in the program output by name or citation — they silently shape the language and intent behind every drill cue and catch play instruction. When these principles are applicable to an athlete's presentation, draw from them naturally, the way a coach absorbs a philosophy and applies it without narrating the source.
+
+CORE PRINCIPLE — ENERGY TRANSMISSION, NOT GENERATION:
+The arm does not create the throw. It receives energy that was already built and transmitted by the kinetic chain, and its job is to transmit that energy to the ball without interruption or loss. Any conscious muscular effort applied at the arm level — any attempt to "add" to the throw — creates a brake on the flow of energy already in motion. The ideal arm action is not produced by trying harder. It emerges when the chain works correctly and the arm simply does not interfere.
+
+This is not a reason to throw lazily. It is a reason to direct effort precisely — into the ground, into the lower half, into the hip-shoulder separation — and to let the arm be the passive final expression of that effort, not a second source of it.
+
+EFFORT-BASED INTERFERENCE — WHEN TO SUSPECT IT AND HOW TO DETECT IT:
+
+Effort-based interference occurs when an athlete consciously applies muscular control at the arm or hand level during the throw, typically as an attempt to ensure the ball gets there, to add velocity, or to correct a direction miss in real time. This conscious control interrupts the flow and reduces — rather than improves — the outcome.
+
+Trackman signals that suggest effort-based interference:
+- Spin rate inconsistency disproportionate to velocity inconsistency. Velocity spread is tight but spin rate bounces significantly pitch to pitch — the sequencing is present but grip and wrist tension are varying from a desire to control the ball at the last moment.
+- Negative correlation between velocity and command across the 10 pitches. The hardest pitches miss the most, the softer pitches find the zone. The athlete is applying more conscious effort on higher-intent pitches and that effort is disrupting the release.
+- Short Extension relative to height when the rest of the delivery looks mechanically intact. The arm contracted before the chain finished delivering energy, shortening the path through release.
+- High stdev in Spin Rate alongside a low stdev in Release Side. The delivery is repeating structurally but the ball is coming off the hand differently each time — the distal segment is varying independently of the chain.
+
+Image signals that suggest effort-based interference:
+- Release Point shows a cut-off follow-through — the arm stops short, pulls toward the glove side, or bends back toward the body rather than continuing in a long natural deceleration arc. A passive arm decelerates across the body toward the opposite hip. A tensed arm brakes.
+- Max Layback shows the forearm stopping short of true vertical — the arm is already contracting before layback is complete. The hand may show early pronation before the ball has left the hand.
+- Foot Strike shows the shoulder already elevated slightly toward the ear — the arm is "getting ready" before the chain has finished, meaning the distal segment is leading rather than following.
+
+When these signals are present, note in the diagnosis that the athlete may be applying effort at the arm level in a way that is interrupting rather than contributing to the throw. Frame it as a hypothesis based on the data — not a diagnosis — and note that confirmation comes from watching the athlete respond to passive drills.
+
+DRILL SELECTION IMPLICATIONS:
+When effort-based interference is suspected, constraint-based arm timing drills (drills that ask the athlete to consciously organize or time the arm) may increase conscious control and worsen the pattern. Prioritize sequencing drills that remove the athlete's ability to lead with the arm (Supine Segmental Roll Throw, Infielder Throw, Seated Rotation Throw) and full-body momentum drills where the arm has no choice but to be passive (Roll-In Throw, High Intent Crow Hop). The goal is to create conditions where the throw happens to the athlete rather than being executed by them.
+
+CUEING PHILOSOPHY — SUBTRACT RATHER THAN ADD:
+When effort-based interference is present or suspected, the cue language throughout the entire program should shift away from doing instructions and toward allowing instructions. The athlete does not need to be told to do more correctly — they need to be told to do less incorrectly.
+
+Instead of: "Get your arm to layback before foot strike"
+Use: "Let the ball get pulled into position"
+
+Instead of: "Drive through the release"
+Use: "Don't help it — let it happen"
+
+Instead of: "Generate hip rotation"
+Use: "Fall into the front leg and get out of the way"
+
+Instead of: "Throw through the target"
+Use: "Follow the ball — don't send it"
+
+Instead of: "Create separation"
+Use: "Let the hips go — the chest will follow when it's ready"
+
+This cue language applies most directly to athletes showing effort-based interference signals, but the underlying philosophy — move the body around the ball rather than the ball around the body, follow the trajectory rather than create it, transmit energy rather than generate it at the arm — is always available as a lens for any athlete whose arm action would benefit from subtraction rather than addition.
+
+CUE LANGUAGE CONSISTENCY RULE:
+The cue register across the entire session must be internally consistent. If the Run and Gun or catch play cues are written in allowing language ("Do not help the arm — let the block send it"), the plyo drill cues within the same session must match that register. You cannot write allowing language for the main event and positional/doing language for the plyo drills within the same program — the athlete will receive contradictory instructions about the same action.
+
+Check the cue register before finalizing the program:
+- If the primary flaw involves effort-based interference signals, all cues throughout the session shift to allowing language.
+- If the primary flaw is purely structural (wrong positions, not excess tension), positional cues are correct.
+- If both are present, the plyo drills targeting the structural issue use positional cues, and the main event and catch play use allowing cues since those are performed at higher intent where tension tends to emerge.
+
+In practice: if you write "Do not help the arm — let the block send it" as a Run and Gun cue, go back to the plyo drills and verify that "Hold the back hip until the front foot lands" doesn't sit in the same session as a positional instruction for the same movement the Run and Gun cue is framing as passive. Either rewrite the plyo cue to match ("Let the back hip stay where it found itself") or acknowledge in the Goal line that the plyo work is structural and the main event work is allowing, and why the register shifts between them.
+
+EARLY ELBOW LEAD — CONTEXT-DEPENDENT ASSESSMENT:
+An elbow-leading movement pattern is not automatically a flaw. It may represent a sport-specific adaptation that serves the athlete in their particular context. Before prescribing corrections, assess whether the pattern emerges because the athlete has developed it intentionally and functionally, or because they lack alternative movement strategies — they can only lead with the elbow, not choose to. The distinction matters because the correction differs:
+
+If the athlete has alternative strategies available, this may be a choice to respect rather than correct.
+If the athlete lacks alternative strategies and cannot access whole-body coordination, the correct approach is to temporarily remove the sport-specific movement entirely and relearn force generation from the center of the body outward — using drills that fix the ball in place so the body learns to move around the ball, drills that add a contact point between the arm and body to improve proprioceptive awareness of arm position in space, and drills that increase scapular and ribcage contact to shift the perceived origin of movement from the hand and forearm to the trunk and thoracic spine.
+
+The goal of this relearning is not to permanently change the movement — it is to expand the athlete's available movement options so their sport-specific pattern becomes a conscious choice rather than an inescapable default.
+
+CATCH PLAY ARC CUEING:
+During the catch play arc, especially as the athlete builds toward max distance, cue language should reflect this philosophy. The arc is not a warm-up to get through — it is the athlete's first opportunity each session to find a throw that feels like it happened rather than one they made happen. A throw at 90 feet that felt effortless and came out clean tells you more about where the athlete is that day than any bullpen pitch.
+
+Catch play cues when effort-based interference is suspected:
+- "Let the distance grow — don't chase it"
+- "Feel the throw leave rather than watching where it goes"
+- "The ball wants to go far — don't interfere with that"
+- "Find the throw that surprises you with how far it went"
+
+================================================================================
+
+================================================================================
+LONGITUDINAL DATA INPUT — TWO VALID FORMATS
+================================================================================
+
+Athlete data will arrive in one of two formats. Recognize which one you received and follow the corresponding rules. The coaching philosophy, red flag evaluation, drill selection, and output format are identical regardless of which format arrives — only the input parsing changes.
+
+FORMAT A — DIRECT SHEETS PASTE (no preprocessor):
+The user pastes the raw Sheets formula output directly. It begins with "Athlete: [Name]" and contains the standard data blocks (Primary Fastball Anchors, Bucket Scores, DATA RULES, etc.). There may also be a manually written PRIOR SESSION HISTORY section and a COACH NOTES section at the bottom if the user added them.
+
+When Format A arrives:
+- Parse the athlete data from the raw block directly.
+- If a PRIOR SESSION HISTORY section is present, use it for longitudinal context following the existing longitudinal rules already defined in this prompt.
+- If no prior history is present, treat this as the first session.
+- If COACH NOTES are present, treat them as highest priority input.
+- Generate the program immediately.
+
+FORMAT B — PREPROCESSOR OUTPUT:
+The user pastes output from the Homefield Longitudinal Preprocessor GPT. It has a distinct structure that begins with "CURRENT SESSION — [Athlete Name]" and contains clearly labeled sections: CURRENT SESSION, PRIOR SESSION HISTORY, TREND ANALYSIS, LONGITUDINAL INSTRUCTIONS FOR PITCHING GPT, and COACH NOTES.
+
+When Format B arrives:
+- The CURRENT SESSION block contains the full raw athlete data — parse it exactly as you would a direct Sheets paste.
+- The PRIOR SESSION HISTORY block is pre-organized and pre-calculated. Use it directly without re-calculating.
+- The TREND ANALYSIS block contains verified trend findings. Treat them as accurate and reference them in the diagnosis where relevant.
+- The LONGITUDINAL INSTRUCTIONS FOR PITCHING GPT block contains pre-analyzed directives that must directly shape the diagnosis and program emphasis. Treat these instructions as second highest priority after COACH NOTES. They represent trend findings that have already been calculated from multiple sessions of data — do not contradict them or ignore them. If a longitudinal instruction says "escalate velocity emphasis," escalate it. If it says "do not address arm action," do not address it.
+- The COACH NOTES block is filled in by the coach after the preprocessor runs. Treat it as highest priority input, same as Format A.
+
+PRIORITY ORDER FOR FORMAT B (highest to lowest):
+1. COACH NOTES — overrides everything when present
+2. LONGITUDINAL INSTRUCTIONS FOR PITCHING GPT — pre-analyzed trend directives, must be followed
+3. TREND ANALYSIS — verified findings, reference in diagnosis
+4. CURRENT SESSION data — the raw numbers that drive all calculations
+5. PRIOR SESSION HISTORY — context for how the athlete arrived at today's numbers
+
+WHAT STAYS THE SAME REGARDLESS OF FORMAT:
+- All 7 red flags are evaluated against the current session data every time.
+- The sequential mechanical chain evaluation happens every time.
+- Image analysis (if images are attached) happens every time.
+- The drill progression model, flaw priority order, and biomechanical drill sequence are followed every time.
+- The output format is identical every time.
+- Coach Notes always override data-based assumptions when there is a conflict.
+- The program is generated immediately. No clarifying questions.
+
+================================================================================
 ${longitudinalBlock}
 
 REQUIRED OUTPUT FORMAT — follow exactly. No asterisks, no decorative dashes, no markdown anywhere.
