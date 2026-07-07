@@ -65,6 +65,36 @@ Use Yarn (or pnpm with `node-linker=hoisted`) workspaces + Turborepo — this is
 
 Not called out anywhere in the roadmap. There is one Supabase project, no staging environment, and no automated tests. This has to exist before real backend/auth code is written against it, not bolted on after.
 
+### 8. The agent harness (`.claude/hooks/`, `.claude/skills/`) enforces this plan's own guardrails
+
+`.claude/hooks/` and `.claude/skills/` exist in the repo but are empty scaffolding. Populating them isn't housekeeping — it's how the guardrails above actually get enforced instead of relying on memory and discipline across a fast-moving rebuild:
+
+- **Hook: block edits to `legacy/`.** Once `src/App.jsx`/`api/generate.js` are frozen (Phase 0), a `PreToolUse` hook on Edit/Write rejects any tool call touching `legacy/**`. This makes decision-to-freeze self-enforcing instead of a rule someone has to remember.
+- **Hook: typecheck/lint gate.** Run on file write or pre-commit across the monorepo workspaces, so type errors don't compound while multiple packages are being built in parallel.
+- **Skill: `/verify-scoring`.** Runs the ported scoring engine in `packages/core` against the Phase 0 golden fixtures and reports any diff from the frozen reference. Turns decision #3's safety net into a one-command check instead of something that has to be run manually and remembered.
+- **Skill: `/new-endpoint`.** Scaffolds a new authenticated, RLS-aware API route following the Phase 1 pattern (auth middleware, error handling, structured logging), so the handful of endpoints built in Phase 1 don't drift in structure as they're added one at a time.
+- **Skill: `/smoke-test`.** Walks the manual critical-path checklist (login → new session → generate → view program) referenced in Phase 0 and Phase 3, useful for as long as there's no automated E2E coverage.
+
+None of this is required to start Phase 1, but it's cheap to build once and pays for itself immediately — build it in Phase 0 alongside the monorepo scaffold, not as an afterthought once the rebuild is already underway.
+
+---
+
+## Open questions
+
+Unlike the "Decisions" above, these don't have a recommendation baked in yet — they need an explicit answer, most of them from the user rather than inferred from the code.
+
+**Needs product/business input:**
+- **IAP approach (decision #2).** Native IAP via RevenueCat (safer for App Store approval, real engineering cost and revenue cut) vs. web-only billing with the app shelling out to a browser for checkout (cheaper to build, real risk of App Store rejection outside the narrow "reader app" exception). This should be settled before Phase 1's billing endpoints are built, not discovered at Phase 5 submission.
+- **Visual/design direction for the rebuild.** Is `src/App.jsx`'s current look (dark theme, custom radar/line charts, specific layout) the actual design spec to port faithfully, or is this rebuild treated as a chance to redesign? This directly decides how much scope Phase 2 carries and which way decision #6 (styling library) leans — a faithful port favors plain `StyleSheet`; a redesign favors investing in Tamagui/NativeWind and a real design pass first.
+- **Existing Supabase data.** Confirming there's no seed/test data in the current project worth carrying into the new schema — if there is, Phase 1's RLS/schema work needs a migration step that isn't currently planned for.
+- **Beta feedback channel.** Phase 3 ends in "beta with real coaches" with no defined way to collect their feedback or usage data (no analytics tool is in the plan at all — not PostHog, not even basic pageview tracking). Needs a decision before Phase 3, not during it.
+
+**Resolved here as engineering defaults (flagged in case there's a reason to override):**
+- **Backend hosting**: Railway over Render — functionally similar, Railway's pricing model fits a low-traffic pre-launch app better. Either works; picking one now unblocks Phase 1 setup instead of leaving it open.
+- **Job queue mechanism**: a Postgres-backed job table polled by a worker loop in `apps/api`, not a dedicated queue (BullMQ/Redis, SQS). Generation volume is low pre-launch; a real queue is easy to introduce later if the polling approach becomes a bottleneck, and not worth the operational overhead now.
+- **Test tooling**: Vitest for unit tests (scoring engine golden fixtures, `packages/core` logic), Playwright for web E2E. Native E2E (Detox or EAS-based device testing) is deliberately deferred to Phase 4 — not worth the setup cost before there's a native build to test.
+- **Web deployment target**: static/SSG export of the Expo Router web build, deployed on Vercel — keeps the existing Vercel account/domain useful without needing Next.js.
+
 ---
 
 ## Phase 0 — Foundations
@@ -75,8 +105,9 @@ Not called out anywhere in the roadmap. There is one Supabase project, no stagin
 4. **CI pipeline** (GitHub Actions): build + typecheck + (once they exist) tests on every PR, for both `apps/expo` and `apps/api`.
 5. **Golden-output fixtures for `calcSession()`** — see decision #3. Generate these against `legacy/src/App.jsx` before any scoring code is rewritten.
 6. **Database migration tooling** — adopt Supabase CLI migrations (`supabase/migrations/`) instead of ad hoc dashboard SQL.
+7. **Agent harness**: populate `.claude/hooks/` and `.claude/skills/` per decision #8 — the legacy-freeze hook, typecheck/lint gate, and the `/verify-scoring`, `/new-endpoint`, `/smoke-test` skills. Wire hooks via `.claude/settings.json`.
 
-*Exit criteria: empty Expo app and empty API service both build in CI against a non-production Supabase project; legacy code is clearly marked as frozen.*
+*Exit criteria: empty Expo app and empty API service both build in CI against a non-production Supabase project; legacy code is clearly marked as frozen and a hook actively rejects edits to it; `/verify-scoring` and `/smoke-test` run successfully even with nothing real to check yet.*
 
 ---
 
@@ -156,11 +187,11 @@ Much smaller than it would have been under a "port later" plan, since the app is
 
 | Phase | Focus | Rough effort |
 |---|---|---|
-| 0 | Foundations: freeze legacy, monorepo scaffold, CI, golden fixtures | 3–5 days |
+| 0 | Foundations: freeze legacy, monorepo scaffold, CI, golden fixtures, agent harness | 4–6 days |
 | 1 | Backend, built secure from day one | 2–3 weeks |
 | 2 | Build the app in Expo | 4–6 weeks |
 | 3 | Web release | 1–2 weeks |
 | 4 | Mobile release prep | 1–2 weeks |
 | 5 | Mobile release | 2–3 weeks |
 
-Decisions #2 (IAP), #5 (monorepo layout), and #6 (styling/state) should be settled before Phase 1 code is written — they shape the structure of `packages/core` and the backend's auth/billing surface, and are expensive to change once screens exist.
+Decisions #2 (IAP), #5 (monorepo layout), and #6 (styling/state) should be settled before Phase 1 code is written — they shape the structure of `packages/core` and the backend's auth/billing surface, and are expensive to change once screens exist. The [open questions](#open-questions) needing product input (IAP approach, visual direction, beta analytics) should be answered before Phase 1 and Phase 2 respectively — see that section for which blocks which phase.
