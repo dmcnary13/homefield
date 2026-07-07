@@ -6,7 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Homefield is a proof-of-concept pitching development platform. Athletes/coaches enter Trackman biomechanics data (10 pitches × 11 columns), a client-side scoring engine grades the session across 5 buckets (Direction, Velocity, Shape, Arm Action, Command), and Claude generates an individualized throwing program from the results. It supports two user modes — Athlete (self-tracking) and Coach (multi-athlete roster) — with a Stripe subscription paywall. Data persists in Supabase.
 
-See [docs/roadmap.md](docs/roadmap.md) for the non-technical audit of known issues and target architecture, and [docs/implementation-plan.md](docs/implementation-plan.md) for the phased, sequenced technical plan (backend extraction, async generation job architecture, RLS, mobile port, etc.). The implementation plan is the source of truth for how and in what order this app changes — read it before making structural changes.
+See [docs/roadmap.md](docs/roadmap.md) for the non-technical audit of known issues and target architecture, and [docs/implementation-plan.md](docs/implementation-plan.md) for the phased, sequenced technical plan. The implementation plan is the source of truth for how and in what order this app changes — read it before making structural changes.
+
+**Planned direction (not yet executed):** the app currently described below (`src/App.jsx`, `api/generate.js`) will be frozen as a behavioral reference and rebuilt from scratch in an Expo + Expo Router monorepo (`apps/expo`, `apps/api`, `packages/core`) — see the implementation plan's Phase 0/1/2. Until that migration actually happens, everything below still accurately describes the live code.
 
 ## Commands
 
