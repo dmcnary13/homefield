@@ -23,11 +23,11 @@ GET  /sessions/generate/:jobId → { status: 'pending'|'running'|'done'|'error',
 
 Web polls or opens an SSE stream on the job; native additionally gets a push notification on completion. Because the same Expo codebase serves both, this only needs to be built once.
 
-### 2. Apple's in-app purchase requirement changes the payments plan
+### 2. Resolved: the native app is a "reader," web is the only place to subscribe
 
-The roadmap's payments section (Layer 4) assumes Stripe end-to-end. Once this ships as a native iOS app, Apple requires In-App Purchase for digital subscriptions (Apple takes 15–30%) unless the app qualifies for a narrow exception (e.g., "reader" apps, or the EU External Purchase Link entitlement, which has its own restrictions). Stripe-only checkout inside a native app risks App Store rejection.
+**Decision:** subscription purchase and account/billing management happen exclusively on the web build. The native iOS/Android app has **no purchase UI and no purchase links at all** — it reads `plan_status` from the backend (same field, same endpoint the web build uses) and gates features accordingly. To subscribe or manage billing, a user goes to the website; the native app is read/practice-only relative to payments. This is the same shape as Netflix's or Spotify's mobile apps.
 
-Because the app is Expo from day one, this decision now affects the *web* build too, not just a later mobile phase — resolve it before building the billing screen at all: either budget for RevenueCat/native IAP on mobile while keeping Stripe on web, or scope the app as web-subscription-only (manage billing via browser redirect even from the native app shell, a common "reader app" pattern). Flag this for product/business input — it's not purely an engineering call.
+This is the standard, lowest-risk "reader app" pattern under Apple's guidelines — it avoids IAP engineering (no RevenueCat, no StoreKit/Play Billing integration, no 15–30% platform cut) entirely, at the cost of not being able to sell subscriptions from inside the native app. Because the app is Expo, this is implemented with platform-specific routing: the `Subscribe`/`Upgrade`/`Manage billing` screens exist only on the Expo **web** target (e.g. `.web.tsx` route overrides) and are simply absent from the native build — not present-but-disabled, genuinely not shipped, since even a non-functional purchase-adjacent affordance can complicate App Store review. Stripe Checkout (Phase 1, item 7) remains exactly as planned; it's just only ever reached through the web build.
 
 ### 3. Porting the scoring engine needs a golden-output safety net
 
@@ -55,11 +55,11 @@ homefield/
 
 Use Yarn (or pnpm with `node-linker=hoisted`) workspaces + Turborepo — this is Expo's own documented monorepo pattern and avoids fighting Metro's module resolution. Don't invent a custom structure.
 
-### 6. Styling and state-management approach, decided before the first screen is built
+### 6. Resolved: preserve the current visual identity; plain RN StyleSheet
 
-`App.jsx` today is entirely inline style objects and ad hoc `useState`. Neither ports to a real app. Pick both up front, since every screen built afterward depends on the choice:
-- **Styling**: RN `StyleSheet` (minimal dependency) or a cross-platform system like Tamagui/NativeWind (more consistent theming across web/iOS/Android, more setup cost). Given this app has a distinct existing visual identity (dark theme, custom charts), lean toward NativeWind/Tamagui only if the team wants systematic theming; otherwise plain `StyleSheet` is fine to start.
-- **State/data-fetching**: React Query (or SWR) for all server state — job polling, pagination, and cross-screen cache sharing all need this and it should live in `packages/core`, shared by construction rather than by discipline.
+**Decision:** the rebuild is a faithful port, not a redesign. `legacy/src/App.jsx`'s current look — dark theme, the custom `RadarChart`/`LineChart` components, existing layout and copy — is the actual design spec for Phase 2, not just a behavioral reference. That resolves the styling question directly: plain RN `StyleSheet` (translating the existing inline style objects 1:1) rather than adopting a theming system like Tamagui/NativeWind, since there's no new design system to express — reproduce what exists.
+
+`App.jsx` today also uses ad hoc `useState` for all server state, which doesn't port cleanly. **State/data-fetching**: React Query (or SWR) for all server state — job polling, pagination, and cross-screen cache sharing all need this and it should live in `packages/core`, shared by construction rather than by discipline.
 
 ### 7. No tests, no CI, no environment separation exist today
 
@@ -84,10 +84,12 @@ None of this is required to start Phase 1, but it's cheap to build once and pays
 Unlike the "Decisions" above, these don't have a recommendation baked in yet — they need an explicit answer, most of them from the user rather than inferred from the code.
 
 **Needs product/business input:**
-- **IAP approach (decision #2).** Native IAP via RevenueCat (safer for App Store approval, real engineering cost and revenue cut) vs. web-only billing with the app shelling out to a browser for checkout (cheaper to build, real risk of App Store rejection outside the narrow "reader app" exception). This should be settled before Phase 1's billing endpoints are built, not discovered at Phase 5 submission.
-- **Visual/design direction for the rebuild.** Is `src/App.jsx`'s current look (dark theme, custom radar/line charts, specific layout) the actual design spec to port faithfully, or is this rebuild treated as a chance to redesign? This directly decides how much scope Phase 2 carries and which way decision #6 (styling library) leans — a faithful port favors plain `StyleSheet`; a redesign favors investing in Tamagui/NativeWind and a real design pass first.
-- **Existing Supabase data.** Confirming there's no seed/test data in the current project worth carrying into the new schema — if there is, Phase 1's RLS/schema work needs a migration step that isn't currently planned for.
-- **Beta feedback channel.** Phase 3 ends in "beta with real coaches" with no defined way to collect their feedback or usage data (no analytics tool is in the plan at all — not PostHog, not even basic pageview tracking). Needs a decision before Phase 3, not during it.
+- **Beta feedback channel.** Phase 3 ends in "beta with real coaches" with no defined way to collect their feedback or usage data (no analytics tool is in the plan at all — not PostHog, not even basic pageview tracking). Needs a decision before Phase 3, not during it — doesn't block Phase 0/1/2 work.
+
+**Answered:**
+- **IAP approach** — resolved as decision #2: web-only subscriptions, native app is a reader with no purchase UI at all.
+- **Visual/design direction** — resolved as decision #6: faithful port of the current look, not a redesign.
+- **Existing Supabase data** — no migration needed. Current production Supabase is untouched by this work; the new schema is designed fresh on a separate project (Phase 0, item 3), with no cutover of the old database planned at this stage.
 
 **Resolved here as engineering defaults (flagged in case there's a reason to override):**
 - **Backend hosting**: Railway over Render — functionally similar, Railway's pricing model fits a low-traffic pre-launch app better. Either works; picking one now unblocks Phase 1 setup instead of leaving it open.
@@ -162,9 +164,9 @@ First ship checkpoint. This is the Expo Router web export — there is no separa
 
 ## Phase 4 — Mobile release prep
 
-Much smaller than it would have been under a "port later" plan, since the app is already Expo — this phase is about native-specific concerns, not rebuilding UI.
+Much smaller than it would have been under a "port later" plan, since the app is already Expo — this phase is about native-specific concerns, not rebuilding UI. It's also smaller than a typical mobile-prep phase because decision #2 already ruled out native IAP work entirely.
 
-1. Resolve and implement the IAP decision (decision #2) — RevenueCat/native IAP wiring, or the web-billing-redirect pattern.
+1. **Reader-app compliance check**: verify the native build has zero purchase UI, zero purchase links, and zero references to pricing/checkout — confirm this explicitly before submission, since it's the entire basis for skipping IAP.
 2. EAS Build configuration for iOS and Android.
 3. Platform QA: safe areas, keyboard avoidance, native navigation feel (tab bars, back gesture) — things the web build doesn't exercise.
 4. Native crash reporting (Sentry's RN SDK or equivalent) alongside the web error tracking from Phase 3.
@@ -175,7 +177,7 @@ Much smaller than it would have been under a "port later" plan, since the app is
 
 ## Phase 5 — Mobile release
 
-1. App Store / Play Store submission: developer accounts, privacy nutrition labels, screenshots, review guideline compliance (subscription disclosure requirements in particular, given the IAP question above).
+1. App Store / Play Store submission: developer accounts, privacy nutrition labels, screenshots, review guideline compliance — categorize correctly as a reader app per decision #2 (no purchase flow in the binary).
 2. Compliance review: several age tiers in the scoring engine go down to under-14 athletes — this app very likely handles minors' data. Get a legal/privacy read on COPPA and equivalent obligations before wide release; this is not an engineering task but is a release blocker if skipped.
 3. Beta via TestFlight / Play Internal Testing before public release.
 
@@ -194,4 +196,4 @@ Much smaller than it would have been under a "port later" plan, since the app is
 | 4 | Mobile release prep | 1–2 weeks |
 | 5 | Mobile release | 2–3 weeks |
 
-Decisions #2 (IAP), #5 (monorepo layout), and #6 (styling/state) should be settled before Phase 1 code is written — they shape the structure of `packages/core` and the backend's auth/billing surface, and are expensive to change once screens exist. The [open questions](#open-questions) needing product input (IAP approach, visual direction, beta analytics) should be answered before Phase 1 and Phase 2 respectively — see that section for which blocks which phase.
+Decisions #1–8 are all resolved as of this revision. The one remaining [open question](#open-questions) — beta feedback/analytics tooling — only needs answering before Phase 3, so it doesn't block starting Phase 0 now.
