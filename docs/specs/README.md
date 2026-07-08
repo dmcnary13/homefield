@@ -13,4 +13,4 @@ docs/specs/{spec-name}/
 
 Every chunk's acceptance criteria must be checkable by `tsc`, `eslint`, or `jest` — that's what `spec-runner` verifies automatically. If a spec contains UI chunks whose correctness can't be checked that way (e.g. matching the legacy app's visual design), it includes a **"Visual QA"** section listing those chunks; a human confirms them against the running app before the spec's PR is merged. This is a merge-time gate, not something `spec-runner` blocks on mid-loop.
 
-See [agent-harness/spec.md](agent-harness/spec.md) for the first example.
+Phase 0's specs, in dependency order: [monorepo-scaffold/spec.md](monorepo-scaffold/spec.md) (builds first — everything else depends on it), then [agent-harness/spec.md](agent-harness/spec.md) (depends on the scaffold's workspaces existing).

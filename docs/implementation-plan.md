@@ -45,7 +45,7 @@ Set this up once, correctly, before any app code exists:
 homefield/
   apps/
     expo/        # Expo Router app — iOS, Android, and web from one codebase
-    api/         # Node/Express (or Fastify) backend
+    api/         # Node/TypeScript backend (Fastify — see docs/specs/monorepo-scaffold/spec.md)
   packages/
     core/        # shared types, API client, prompt builder, scoring engine
   docs/
@@ -118,8 +118,8 @@ Unlike the "Decisions" above, these don't have a recommendation baked in yet —
 
 ## Phase 0 — Foundations
 
-1. **Freeze `src/App.jsx` and `api/generate.js`**: move them to `legacy/` unmodified, update `CLAUDE.md` to point there as the behavioral reference. No further commits to this code except reference annotations.
-2. **Monorepo scaffold**: set up `apps/expo` (Expo's default TypeScript template, Expo Router, managed workflow per decision #9), `apps/api` (minimal Node/TypeScript service with one health-check route), and `packages/core` (empty TS package with one placeholder export) — pnpm workspaces + Turborepo per decision #5. Each workspace gets real, working `lint`/`typecheck`/`test`/`build` scripts (`eslint-config-expo` for `apps/expo`; `jest-expo`/Jest per the test-tooling default above) wired through a `turbo.json` pipeline — there's nothing real to lint or test yet, but the *commands* must actually run and pass, since `verify-chunk` (item 7) depends on them existing.
+1. **Freeze the current app into `legacy/`**: the whole app (`src/`, `public/`, `api/`, `package.json`, `vercel.json`), not just the two files originally called out here — see `docs/specs/monorepo-scaffold/spec.md` for why a partial move doesn't work once the root `package.json` becomes the pnpm workspace manifest. Update `CLAUDE.md` to point there as the behavioral reference. No further commits to this code except reference annotations.
+2. **Monorepo scaffold** — see [docs/specs/monorepo-scaffold/spec.md](specs/monorepo-scaffold/spec.md): `apps/expo` (Expo's default TypeScript template, Expo Router, managed workflow per decision #9), `apps/api` (Fastify, minimal, one health-check route), and `packages/core` (`@homefield/core`, empty TS package with one placeholder export) — pnpm workspaces + Turborepo per decision #5. Each workspace gets real, working `lint`/`typecheck`/`test`/`build` scripts (`eslint-config-expo` for `apps/expo`; `jest-expo`/Jest per the test-tooling default above) wired through a `turbo.json` pipeline — there's nothing real to lint or test yet, but the *commands* must actually run and pass, since `verify-chunk` (item 7) depends on them existing.
 3. **Environment separation**: second Supabase project for dev/staging, separate `ANTHROPIC_API_KEY` and Stripe test keys per environment, documented in `.env.example`.
 4. **CI pipeline** (GitHub Actions): runs the same Turborepo pipeline (`turbo run lint typecheck test build`) as `verify-chunk` runs locally, on every PR — the two must not drift.
 5. **Golden-output fixtures for `calcSession()`** — see decision #3. Generate these against `legacy/src/App.jsx` before any scoring code is rewritten.
@@ -138,7 +138,7 @@ Unlike the "Decisions" above, these don't have a recommendation baked in yet —
 
 Because nothing is live, there's no "harden an insecure app" step — the backend is simply built correctly the first time. This is the first phase run as an autonomous `spec-runner` loop (decision #10): write `docs/specs/backend/spec.md` covering the items below, split it into chunks, and let the loop execute it — don't do this phase as ad hoc direct work now that the harness supports it.
 
-1. Stand up the Node/Express (or Fastify) service in `apps/api` with the async job endpoints from decision #1.
+1. Stand up the async job endpoints from decision #1 on the Fastify service already scaffolded in Phase 0 (`docs/specs/monorepo-scaffold/spec.md` resolved Express-vs-Fastify in favor of Fastify).
 2. Auth endpoints per decision #4 (cookie + token from one login flow). Supabase Auth stays the identity provider; the Supabase key lives only in `apps/api`, never shipped to a client.
 3. RLS policies on `accounts`, `athletes`, `sessions` scoped to `auth.uid()`, written and tested against staging data — since there's no live traffic, there's no risk in getting this right before anything depends on it.
 4. `/sessions/calculate` endpoint running the ported scoring engine (`packages/core`), verified against the Phase 0 golden fixtures.
