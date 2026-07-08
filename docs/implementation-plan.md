@@ -53,7 +53,7 @@ homefield/
   legacy/        # src/App.jsx and api/generate.js, frozen, moved here as reference
 ```
 
-Use Yarn (or pnpm with `node-linker=hoisted`) workspaces + Turborepo — this is Expo's own documented monorepo pattern and avoids fighting Metro's module resolution. Don't invent a custom structure.
+Use **pnpm** workspaces (with `node-linker=hoisted` in `.npmrc`) + **Turborepo** — this is one of Expo's own documented monorepo patterns and avoids fighting Metro's module resolution. Every workspace (`apps/expo`, `apps/api`, `packages/core`) is **TypeScript** — Expo's default project template is TS-first, so the whole monorepo is one language from day one, not just the backend. Don't invent a custom structure.
 
 ### 6. Resolved: preserve the current visual identity; plain RN StyleSheet
 
@@ -77,6 +77,23 @@ Not called out anywhere in the roadmap. There is one Supabase project, no stagin
 
 None of this is required to start Phase 1, but it's cheap to build once and pays for itself immediately — build it in Phase 0 alongside the monorepo scaffold, not as an afterthought once the rebuild is already underway.
 
+### 9. Expo workflow: managed, not prebuild/CNG
+
+The user has not built an Expo app before, and there's no custom native module planned anywhere in this project — `expo-image-picker`, `expo-document-picker`, `expo-notifications`, and `expo-secure-store` are all standard Expo SDK packages with config plugins, no ejecting required. Use the **managed workflow**: no `ios/`/`android/` native project folders committed to the repo; EAS Build generates them at build time from `app.json`/`app.config.ts`. This is simpler to reason about and matches Expo's own recommendation for exactly this situation. Revisit only if a future requirement needs a native module with no Expo config plugin.
+
+### 10. The repo must be spec-runner-ready by the end of Phase 0
+
+Phase 0 isn't just scaffolding — its job is to leave the repo in a state where **Phase 1 onward is executed as autonomous `spec-runner` loops**, not ad hoc direct work. That reprioritizes what "Agent harness" (decision #8) means: `spec-runner`, `plan-reviewer`, and a Homefield-specific `verify-chunk` script (adapted from the pattern inspected in `5-tool-ams`, see [docs/specs/agent-harness/spec.md](specs/agent-harness/spec.md)) are built in Phase 0, not deferred until Phase 1/2 code exists — they only need the monorepo scaffold's `lint`/`typecheck`/`test`/`build` scripts to exist and run, which decision #5's scaffold already provides even before any real feature code is written.
+
+This has one unavoidable bootstrapping consequence: **Phase 0 itself is built by hand, not by the loop it's building** — `spec-runner` can't execute the spec that creates `spec-runner`. Phase 1 is the first phase actually run through it.
+
+It also constrains how chunks get written from Phase 1 onward, since `spec-runner`'s verification step is `tsc`/`eslint`/`jest` only — no browser:
+
+- **Acceptance criteria must be checkable by typecheck, lint, or a test command.** No chunk (in any phase) may have an acceptance criterion like "looks right" or "the flow feels smooth."
+- **UI chunks (Phase 2 onward) get an additional, non-blocking visual-check requirement.** The loop still verifies and commits a UI chunk automatically once `tsc`/`eslint`/`jest` pass — it does not pause mid-run waiting on a human, which would defeat the point of an autonomous loop. Instead, every spec containing UI chunks lists them in a **"Visual QA"** section of the PR description, and that PR is not merged until a human has compared the running app against the legacy reference (decision #6: faithful port) for each listed chunk. Visual sign-off is a **PR-review-time gate**, not a loop-time gate.
+- **Chunks branch off and PR back into `homefield-v0-1-0`**, not `main` — this branch is where the whole rebuild lives until it's ready to replace the current `main`. There is no separate `dev` branch (unlike `5-tool-ams`); this repo doesn't need that extra layer at its current size.
+- **Progress tracking is `checklist.md` only** — no Jira sync (see [docs/specs/agent-harness/spec.md](specs/agent-harness/spec.md) open decisions).
+
 ---
 
 ## Open questions
@@ -94,7 +111,7 @@ Unlike the "Decisions" above, these don't have a recommendation baked in yet —
 **Resolved here as engineering defaults (flagged in case there's a reason to override):**
 - **Backend hosting**: Railway over Render — functionally similar, Railway's pricing model fits a low-traffic pre-launch app better. Either works; picking one now unblocks Phase 1 setup instead of leaving it open.
 - **Job queue mechanism**: a Postgres-backed job table polled by a worker loop in `apps/api`, not a dedicated queue (BullMQ/Redis, SQS). Generation volume is low pre-launch; a real queue is easy to introduce later if the polling approach becomes a bottleneck, and not worth the operational overhead now.
-- **Test tooling**: Vitest for unit tests (scoring engine golden fixtures, `packages/core` logic), Playwright for web E2E. Native E2E (Detox or EAS-based device testing) is deliberately deferred to Phase 4 — not worth the setup cost before there's a native build to test.
+- **Test tooling**: Jest across every workspace (`jest-expo` preset for `apps/expo`, plain Jest for `apps/api` and `packages/core`) rather than Vitest — `jest-expo` is Expo's own officially supported test runner and has none of Vitest's friction with React Native internals, and one test runner across the monorepo means `spec-runner`'s verify step runs the same command shape everywhere. Playwright stays for web E2E. Native E2E (Detox or EAS-based device testing) is deliberately deferred to Phase 4 — not worth the setup cost before there's a native build to test.
 - **Web deployment target**: static/SSG export of the Expo Router web build, deployed on Vercel — keeps the existing Vercel account/domain useful without needing Next.js.
 
 ---
@@ -102,20 +119,24 @@ Unlike the "Decisions" above, these don't have a recommendation baked in yet —
 ## Phase 0 — Foundations
 
 1. **Freeze `src/App.jsx` and `api/generate.js`**: move them to `legacy/` unmodified, update `CLAUDE.md` to point there as the behavioral reference. No further commits to this code except reference annotations.
-2. **Monorepo scaffold**: set up the `apps/`/`packages/` layout and workspace tooling from decision #5. Empty apps that build and run — no features yet.
+2. **Monorepo scaffold**: set up `apps/expo` (Expo's default TypeScript template, Expo Router, managed workflow per decision #9), `apps/api` (minimal Node/TypeScript service with one health-check route), and `packages/core` (empty TS package with one placeholder export) — pnpm workspaces + Turborepo per decision #5. Each workspace gets real, working `lint`/`typecheck`/`test`/`build` scripts (`eslint-config-expo` for `apps/expo`; `jest-expo`/Jest per the test-tooling default above) wired through a `turbo.json` pipeline — there's nothing real to lint or test yet, but the *commands* must actually run and pass, since `verify-chunk` (item 7) depends on them existing.
 3. **Environment separation**: second Supabase project for dev/staging, separate `ANTHROPIC_API_KEY` and Stripe test keys per environment, documented in `.env.example`.
-4. **CI pipeline** (GitHub Actions): build + typecheck + (once they exist) tests on every PR, for both `apps/expo` and `apps/api`.
+4. **CI pipeline** (GitHub Actions): runs the same Turborepo pipeline (`turbo run lint typecheck test build`) as `verify-chunk` runs locally, on every PR — the two must not drift.
 5. **Golden-output fixtures for `calcSession()`** — see decision #3. Generate these against `legacy/src/App.jsx` before any scoring code is rewritten.
 6. **Database migration tooling** — adopt Supabase CLI migrations (`supabase/migrations/`) instead of ad hoc dashboard SQL.
-7. **Agent harness**: populate `.claude/hooks/` and `.claude/skills/` per decision #8 — the legacy-freeze hook, typecheck/lint gate, and the `/verify-scoring`, `/new-endpoint`, `/smoke-test` skills. Wire hooks via `.claude/settings.json`.
+7. **Agent harness**, per decision #8 and #10 — see [docs/specs/agent-harness/spec.md](specs/agent-harness/spec.md) for the full build-out:
+   - Hooks: legacy-freeze path guard, typecheck/lint gate (`.claude/hooks/`, wired via `.claude/settings.json`)
+   - Skills: `homefield-conventions`, `smoke-test`, `verify-scoring`, `new-endpoint`, `spec-reviewer`, `plan-reviewer`, `spec-runner` (`.claude/skills/`)
+   - `scripts/verify-chunk.ts` — runs the Turborepo pipeline scoped to the current chunk's diff, writes a result log to `.claude/verify-logs/`
+8. **Prove the loop works**: run `spec-runner` end-to-end against a trivial placeholder spec (e.g. "add a `ping` health-check route to `apps/api`") — one branch, one chunk, one commit, `checklist.md` updated, one PR opened against `homefield-v0-1-0`. This is the actual exit test for decision #10, not just a description of intent.
 
-*Exit criteria: empty Expo app and empty API service both build in CI against a non-production Supabase project; legacy code is clearly marked as frozen and a hook actively rejects edits to it; `/verify-scoring` and `/smoke-test` run successfully even with nothing real to check yet.*
+*Exit criteria: every workspace builds, lints, typechecks, and tests in CI against a non-production Supabase project; legacy code is frozen and a hook actively rejects edits to it; the placeholder spec in item 8 runs through `spec-runner` successfully, start to finish, with no manual intervention beyond reviewing the resulting PR.*
 
 ---
 
 ## Phase 1 — Backend, built secure from day one
 
-Because nothing is live, there's no "harden an insecure app" step — the backend is simply built correctly the first time.
+Because nothing is live, there's no "harden an insecure app" step — the backend is simply built correctly the first time. This is the first phase run as an autonomous `spec-runner` loop (decision #10): write `docs/specs/backend/spec.md` covering the items below, split it into chunks, and let the loop execute it — don't do this phase as ad hoc direct work now that the harness supports it.
 
 1. Stand up the Node/Express (or Fastify) service in `apps/api` with the async job endpoints from decision #1.
 2. Auth endpoints per decision #4 (cookie + token from one login flow). Supabase Auth stays the identity provider; the Supabase key lives only in `apps/api`, never shipped to a client.
@@ -134,7 +155,7 @@ Because nothing is live, there's no "harden an insecure app" step — the backen
 
 ## Phase 2 — Build the app in Expo
 
-Screens are built once, using `legacy/src/App.jsx` purely as a spec for behavior and copy — not copied code.
+Screens are built once, in TypeScript, using `legacy/src/App.jsx` purely as a spec for behavior and copy — not copied code. Also run via `spec-runner`; per decision #10, every chunk here carries the additional "Visual QA" PR-review gate on top of the normal typecheck/lint/test verification, since faithfully matching the legacy app's look (decision #6) isn't something the loop can check on its own.
 
 1. Expo Router file structure (per the roadmap's Layer 3 sketch): `(auth)`, `(coach)`, `(athlete)`, `session/`.
 2. Build screens in order: Landing → Auth → Dashboard (coach + athlete) → New Session (CSV upload + pitch table + mechanics images) → Session Detail / Program Display.
@@ -189,11 +210,11 @@ Much smaller than it would have been under a "port later" plan, since the app is
 
 | Phase | Focus | Rough effort |
 |---|---|---|
-| 0 | Foundations: freeze legacy, monorepo scaffold, CI, golden fixtures, agent harness | 4–6 days |
+| 0 | Foundations: freeze legacy, monorepo scaffold, CI, golden fixtures, full agent harness (incl. `spec-runner`), proven end-to-end | 1–1.5 weeks |
 | 1 | Backend, built secure from day one | 2–3 weeks |
 | 2 | Build the app in Expo | 4–6 weeks |
 | 3 | Web release | 1–2 weeks |
 | 4 | Mobile release prep | 1–2 weeks |
 | 5 | Mobile release | 2–3 weeks |
 
-Decisions #1–8 are all resolved as of this revision. The one remaining [open question](#open-questions) — beta feedback/analytics tooling — only needs answering before Phase 3, so it doesn't block starting Phase 0 now.
+Decisions #1–10 are all resolved as of this revision. The one remaining [open question](#open-questions) — beta feedback/analytics tooling — only needs answering before Phase 3, so it doesn't block starting Phase 0 now.
